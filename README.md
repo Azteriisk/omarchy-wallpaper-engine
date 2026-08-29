@@ -100,6 +100,12 @@ Press <kbd>Super</kbd> + <kbd>Ctrl</kbd> + <kbd>Space</kbd> to open the Omarchy 
 * **2D Canvas `ctx.shadowBlur` on Cairo / WebKitGTK**:
   On Windows (Chromium / Direct2D), heavy canvas blur passes are executed on GPU compute shaders. On Linux (Cairo / WebKitGTK 2D canvas), large `shadowBlur` values fall back to CPU software rasterizer Gaussian convolutions across millions of pixels.
   * **Tip**: For web visualizers, keep `bloom` / `glowBlur` at `0` or low values (`< 5`) in the widget settings to maintain 60–120+ FPS.
+* **NVIDIA Wayland Driver & WebKit Crash Alerts**:
+  Due to an upstream bug in proprietary NVIDIA drivers on Wayland, WebKit's background rendering process (`WebKitWebProcess`) may intermittently crash when continuously rendering web wallpapers. The plugin includes a built-in helper to silence noisy desktop crash push notifications:
+  ```bash
+  omarchy-toggle-webkit-crash-alerts
+  ```
+  Running the command toggles suppression on/off.
 * **Audio Capture**: Audio streaming requires PipeWire (`pw-record`). Latency is typically `< 25ms`.
 
 ---

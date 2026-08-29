@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Toggle WebKitWebProcess crash alert suppression in Omarchy crash watcher
+# Useful for NVIDIA/Wayland users running WebKit/HTML5 live wallpapers.
+
+OVERRIDE_DIR="$HOME/.config/systemd/user/omarchy-crash-watch.service.d"
+OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
+
+if [[ -f "$OVERRIDE_FILE" ]]; then
+    rm -f "$OVERRIDE_FILE"
+    systemctl --user daemon-reload
+    systemctl --user restart omarchy-crash-watch.service
+    echo "✓ WebKitWebProcess crash alerts RE-ENABLED (alerts will now show)."
+    if command -v omarchy-notification-send >/dev/null 2>&1; then
+        omarchy-notification-send "Crash Watch" "WebKit crash alerts re-enabled"
+    fi
+else
+    mkdir -p "$OVERRIDE_DIR"
+    cat << 'EOF' > "$OVERRIDE_FILE"
+[Service]
+Environment="OMARCHY_CRASH_IGNORE=^WebKitWebProcess$"
+EOF
+    systemctl --user daemon-reload
+    systemctl --user restart omarchy-crash-watch.service
+    echo "✓ WebKitWebProcess crash alerts MUTED (alerts will be suppressed)."
+    if command -v omarchy-notification-send >/dev/null 2>&1; then
+        omarchy-notification-send "Crash Watch" "WebKit crash alerts muted"
+    fi
+fi

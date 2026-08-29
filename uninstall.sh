@@ -27,9 +27,12 @@ if [ -f "$HOOK_FILE" ] || [ -L "$HOOK_FILE" ]; then
   rm -f "$HOOK_FILE"
 fi
 
-# Remove CLI binary symlink
+# Remove CLI binary symlinks
 if [ -L "$BIN_LINK" ] || [ -f "$BIN_LINK" ]; then
   rm -f "$BIN_LINK"
+fi
+if [ -L "${XDG_BIN_HOME:-$HOME/.local/bin}/omarchy-toggle-webkit-crash-alerts" ] || [ -f "${XDG_BIN_HOME:-$HOME/.local/bin}/omarchy-toggle-webkit-crash-alerts" ]; then
+  rm -f "${XDG_BIN_HOME:-$HOME/.local/bin}/omarchy-toggle-webkit-crash-alerts"
 fi
 
 # Clean bar layout in shell.json if present

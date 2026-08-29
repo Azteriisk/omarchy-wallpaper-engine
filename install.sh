@@ -33,12 +33,14 @@ fi
 # Ensure scripts are executable
 chmod +x "$TARGET_DIR/scripts/omarchy-wpe"
 chmod +x "$TARGET_DIR/scripts/wpe-layer-web.py"
+chmod +x "$TARGET_DIR/scripts/omarchy-toggle-webkit-crash-alerts"
 chmod +x "$TARGET_DIR/hooks/theme-set.sh"
 chmod +x "$TARGET_DIR/install.sh"
 chmod +x "$TARGET_DIR/uninstall.sh"
 
-# Install CLI binary symlink
+# Install CLI binary symlinks
 ln -nsf "$TARGET_DIR/scripts/omarchy-wpe" "$BIN_DIR/omarchy-wpe"
+ln -nsf "$TARGET_DIR/scripts/omarchy-toggle-webkit-crash-alerts" "$BIN_DIR/omarchy-toggle-webkit-crash-alerts"
 
 # Install theme change hook
 ln -nsf "$TARGET_DIR/hooks/theme-set.sh" "$HOOKS_DIR/wpe-theme-sync.sh"
