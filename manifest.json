@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "azterisk.wallpaper-engine",
+  "name": "Wallpaper Engine",
+  "version": "1.0.0",
+  "author": "Azteriisk",
+  "description": "Wallpaper Engine integration for Omarchy themes, visual background switcher, and multi-monitor management",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Live Wallpaper",
+    "description": "Wallpaper Engine status, volume, playback, and theme assignment controls",
+    "category": "System",
+    "allowMultiple": false
+  }
+}

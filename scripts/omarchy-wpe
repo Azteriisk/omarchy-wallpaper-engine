@@ -1,0 +1,891 @@
+#!/usr/bin/env bash
+# omarchy-wpe - Wallpaper Engine Manager & Omarchy Theme Bridge
+# Author: Azteriisk
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+CONFIG_FILE="$CONFIG_DIR/wpe.json"
+STATE_FILE="$STATE_DIR/wpe-state.json"
+PID_FILE="/tmp/omarchy-wpe.pid"
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/azterisk.wallpaper-engine"
+
+mkdir -p "$CONFIG_DIR" "$STATE_DIR"
+
+# Discover Steam Library paths
+find_steam_paths() {
+  local steam_root="${STEAM_ROOT:-$HOME/.local/share/Steam}"
+  local library_folders=("$steam_root")
+
+  if [[ -f "$steam_root/steamapps/libraryfolders.vdf" ]]; then
+    while IFS= read -r path; do
+      if [[ -n "$path" && -d "$path" ]]; then
+        library_folders+=("$path")
+      fi
+    done < <(grep -Po '(?<="path"\t\t")[^"]+' "$steam_root/steamapps/libraryfolders.vdf" 2>/dev/null || true)
+  fi
+
+  # Add custom workshop dirs if defined in config
+  if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    while IFS= read -r custom_path; do
+      if [[ -n "$custom_path" && -d "$custom_path" ]]; then
+        library_folders+=("$custom_path")
+      fi
+    done < <(jq -r '.custom_library_paths[]? // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  fi
+
+  # Deduplicate paths
+  printf '%s\n' "${library_folders[@]}" | sort -u
+}
+
+# Find Wallpaper Engine assets directory
+find_assets_dir() {
+  if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    local custom_assets
+    custom_assets=$(jq -r '.assets_dir // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ -n "$custom_assets" && -d "$custom_assets" ]]; then
+      echo "$custom_assets"
+      return 0
+    fi
+  fi
+
+  while IFS= read -r lib; do
+    local candidate="$lib/steamapps/common/wallpaper_engine/assets"
+    if [[ -d "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+    local candidate2="$lib/steamapps/common/wallpaper_engine"
+    if [[ -d "$candidate2/assets" ]]; then
+      echo "$candidate2/assets"
+      return 0
+    fi
+  done < <(find_steam_paths)
+
+  # Fallback check
+  echo "$HOME/.local/share/Steam/steamapps/common/wallpaper_engine/assets"
+}
+
+# Find all Wallpaper Engine workshop directories
+find_workshop_dirs() {
+  while IFS= read -r lib; do
+    local candidate="$lib/steamapps/workshop/content/431960"
+    if [[ -d "$candidate" ]]; then
+      echo "$candidate"
+    fi
+  done < <(find_steam_paths)
+}
+
+# List all discovered Wallpaper Engine wallpapers
+list_wallpapers() {
+  local as_json=false
+  if [[ "${1:-}" == "--json" ]]; then
+    as_json=true
+  fi
+
+  local count=0
+  local items=()
+
+  while IFS= read -r ws_dir; do
+    [[ -d "$ws_dir" ]] || continue
+    for item_dir in "$ws_dir"/*; do
+      [[ -d "$item_dir" ]] || continue
+      local item_id="${item_dir##*/}"
+      local project_json="$item_dir/project.json"
+      local title="Wallpaper $item_id"
+      local preview=""
+      local type="unknown"
+
+      if [[ -f "$project_json" ]] && command -v jq >/dev/null 2>&1; then
+        local parsed_title
+        parsed_title=$(jq -r '.title // empty' "$project_json" 2>/dev/null || true)
+        [[ -n "$parsed_title" ]] && title="$parsed_title"
+        local parsed_type
+        parsed_type=$(jq -r '.type // empty' "$project_json" 2>/dev/null || true)
+        [[ -n "$parsed_type" ]] && type="$parsed_type"
+        local parsed_preview
+        parsed_preview=$(jq -r '.preview // empty' "$project_json" 2>/dev/null || true)
+        if [[ -n "$parsed_preview" && -f "$item_dir/$parsed_preview" ]]; then
+          preview="$item_dir/$parsed_preview"
+        fi
+      fi
+
+      if [[ -z "$preview" ]]; then
+        for p in "$item_dir/preview.jpg" "$item_dir/preview.png" "$item_dir/preview.gif" "$item_dir/preview.webp"; do
+          if [[ -f "$p" ]]; then
+            preview="$p"
+            break
+          fi
+        done
+      fi
+
+      if [[ -n "$preview" ]]; then
+        (( count++ )) || true
+        if [[ "$as_json" == true ]]; then
+          items+=("$(jq -n \
+            --arg id "$item_id" \
+            --arg title "$title" \
+            --arg preview "$preview" \
+            --arg type "$type" \
+            --arg path "$item_dir" \
+            '{id: $id, title: $title, preview: $preview, type: $type, path: $path}')")
+        else
+          printf '%-12s | %-35s | %-10s | %s\n' "$item_id" "${title:0:35}" "$type" "$item_dir"
+        fi
+      fi
+    done
+  done < <(find_workshop_dirs)
+
+  if [[ "$as_json" == true ]]; then
+    if (( ${#items[@]} == 0 )); then
+      echo "[]"
+    else
+      printf '%s\n' "${items[@]}" | jq -s '.'
+    fi
+  elif (( count == 0 )); then
+    echo "No Wallpaper Engine workshop items found in Steam libraries."
+    echo "Tip: Make sure Wallpaper Engine (AppID 431960) has downloaded items from Steam."
+  fi
+}
+
+# Resolve item directory from id, path, or symlink
+resolve_wallpaper_dir() {
+  local target="$1"
+
+  # Case 1: Target is a direct directory
+  if [[ -d "$target" && -f "$target/project.json" ]]; then
+    echo "$target"
+    return 0
+  fi
+
+  # Case 2: Target is a .wpe.jpg or symlink to a preview inside a workshop dir
+  if [[ -f "$target" ]]; then
+    local real
+    real=$(realpath "$target" 2>/dev/null || true)
+    local parent="${real%/*}"
+    if [[ -d "$parent" && -f "$parent/project.json" ]]; then
+      echo "$parent"
+      return 0
+    fi
+    # Also check if there's a companion .wpe-target file
+    if [[ -f "${target%.*}.wpe-target" ]]; then
+      local companion
+      companion=$(cat "${target%.*}.wpe-target" 2>/dev/null || true)
+      if [[ -d "$companion" ]]; then
+        echo "$companion"
+        return 0
+      fi
+    fi
+  fi
+
+  # Case 3: Target is a workshop item ID
+  while IFS= read -r ws_dir; do
+    if [[ -d "$ws_dir/$target" ]]; then
+      echo "$ws_dir/$target"
+      return 0
+    fi
+  done < <(find_workshop_dirs)
+
+  echo ""
+  return 1
+}
+
+# Normalize theme name to match Omarchy theme directory convention (lowercase, hyphens)
+normalize_theme_name() {
+  local input="${1:-}"
+  if [[ -z "$input" ]]; then
+    input=$(cat "$STATE_DIR/current/theme.name" 2>/dev/null || echo "matte-black")
+  fi
+  input="${input,,}"
+  input="${input// /-}"
+  echo "$input"
+}
+
+# Assign a Wallpaper Engine item to an Omarchy Theme
+assign_wallpaper() {
+  local raw_theme="${1:-}"
+  local item_target="${2:-}"
+
+  if [[ -z "$raw_theme" || -z "$item_target" ]]; then
+    echo "Usage: omarchy-wpe assign <theme-name> <workshop-id-or-path>" >&2
+    exit 1
+  fi
+
+  local theme
+  theme=$(normalize_theme_name "$raw_theme")
+
+  local item_dir
+  item_dir=$(resolve_wallpaper_dir "$item_target")
+
+  if [[ -z "$item_dir" || ! -d "$item_dir" ]]; then
+    echo "Error: Could not locate Wallpaper Engine item: $item_target" >&2
+    exit 1
+  fi
+
+  local item_id="${item_dir##*/}"
+  local project_json="$item_dir/project.json"
+  local title="Wallpaper-$item_id"
+  local preview=""
+
+  if [[ -f "$project_json" ]] && command -v jq >/dev/null 2>&1; then
+    local parsed_title
+    parsed_title=$(jq -r '.title // empty' "$project_json" 2>/dev/null || true)
+    [[ -n "$parsed_title" ]] && title="$parsed_title"
+  fi
+
+  # Clean title for filename (alphanumeric and dashes/underscores)
+  local clean_title
+  clean_title=$(printf '%s' "$title" | tr -cs 'a-zA-Z0-9._ -' '_' | sed 's/^_//;s/_$//')
+  [[ -z "$clean_title" ]] && clean_title="Wallpaper-$item_id"
+
+  for p in "$item_dir/preview.jpg" "$item_dir/preview.png" "$item_dir/preview.gif" "$item_dir/preview.webp"; do
+    if [[ -f "$p" ]]; then
+      preview="$p"
+      break
+    fi
+  done
+
+  if [[ -z "$preview" ]]; then
+    echo "Error: No preview image found in $item_dir" >&2
+    exit 1
+  fi
+
+  local target_theme_dir="$CONFIG_DIR/backgrounds/$theme"
+  mkdir -p "$target_theme_dir"
+
+  local symlink_file="$target_theme_dir/[WPE] $clean_title.wpe.jpg"
+  local companion_file="$target_theme_dir/[WPE] $clean_title.wpe-target"
+
+  ln -nsf "$preview" "$symlink_file"
+  printf '%s' "$item_dir" > "$companion_file"
+
+  # Send desktop notification
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send -g 󰸉 "Wallpaper Engine" "Assigned '$title' to theme '$theme'" 2>/dev/null || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "Wallpaper Engine" -i "$preview" "Wallpaper Engine" "Assigned '$title' to theme '$theme'" 2>/dev/null || true
+  fi
+
+  echo "==> Assigned Wallpaper Engine item '$title' ($item_id) to theme '$theme'!"
+  echo "    Link: $symlink_file"
+}
+
+# Unassign a Wallpaper Engine item from an Omarchy Theme
+unassign_wallpaper() {
+  local raw_theme="${1:-}"
+  local search="${2:-}"
+
+  if [[ -z "$raw_theme" || -z "$search" ]]; then
+    echo "Usage: omarchy-wpe unassign <theme-name> <workshop-id-or-title-pattern>" >&2
+    exit 1
+  fi
+
+  local theme
+  theme=$(normalize_theme_name "$raw_theme")
+
+  local target_theme_dir="$CONFIG_DIR/backgrounds/$theme"
+  [[ -d "$target_theme_dir" ]] || exit 0
+
+  local found=0
+  local removed_title=""
+
+  while IFS= read -r f; do
+    [[ -n "$f" && -e "$f" ]] || continue
+    local match=false
+    local base="${f##*/}"
+
+    # Check 1: Filename matches search
+    if [[ "${base,,}" == *"${search,,}"* ]]; then
+      match=true
+    fi
+
+    # Check 2: Companion file or symlink target contains search ID
+    local target=""
+    if [[ -f "${f%.*}.wpe-target" ]]; then
+      target=$(cat "${f%.*}.wpe-target" 2>/dev/null || true)
+    elif [[ -L "$f" ]]; then
+      target=$(realpath "$f" 2>/dev/null || true)
+    fi
+
+    if [[ "$target" == *"$search"* ]]; then
+      match=true
+    fi
+
+    if [[ "$match" == true ]]; then
+      removed_title="${base%.*}"
+      removed_title="${removed_title#\[WPE\] }"
+      rm -f "$f" "${f%.*}.wpe-target"
+      echo "Removed: $f"
+      found=1
+    fi
+  done < <(find "$target_theme_dir" -maxdepth 1 -name "*.wpe.jpg" 2>/dev/null || true)
+
+  if (( found > 0 )); then
+    if command -v omarchy-notification-send >/dev/null 2>&1; then
+      omarchy-notification-send -g 󰸉 "Wallpaper Engine" "Removed '${removed_title:-wallpaper}' from theme '$theme'" 2>/dev/null || true
+    elif command -v notify-send >/dev/null 2>&1; then
+      notify-send -a "Wallpaper Engine" "Wallpaper Engine" "Removed '${removed_title:-wallpaper}' from theme '$theme'" 2>/dev/null || true
+    fi
+  else
+    echo "No matching Wallpaper Engine background found in theme '$theme'."
+  fi
+}
+
+# Toggle assignment of a Wallpaper Engine item to a theme
+toggle_theme_wallpaper() {
+  local raw_theme="${1:-}"
+  local item_target="${2:-}"
+
+  if [[ -z "$raw_theme" || -z "$item_target" ]]; then
+    echo "Usage: omarchy-wpe toggle-theme <theme-name> <workshop-id-or-path>" >&2
+    exit 1
+  fi
+
+  local theme
+  theme=$(normalize_theme_name "$raw_theme")
+
+  local target_theme_dir="$CONFIG_DIR/backgrounds/$theme"
+  local is_assigned=false
+
+  if [[ -d "$target_theme_dir" ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      local target=""
+      if [[ -f "${f%.*}.wpe-target" ]]; then
+        target=$(cat "${f%.*}.wpe-target" 2>/dev/null || true)
+      elif [[ -L "$f" ]]; then
+        target=$(realpath "$f" 2>/dev/null || true)
+      fi
+      if [[ "$target" == *"$item_target"* ]]; then
+        is_assigned=true
+        break
+      fi
+    done < <(find "$target_theme_dir" -maxdepth 1 -name "*.wpe.jpg" 2>/dev/null || true)
+  fi
+
+  if [[ "$is_assigned" == true ]]; then
+    unassign_wallpaper "$theme" "$item_target"
+  else
+    assign_wallpaper "$theme" "$item_target"
+  fi
+}
+
+# List wallpapers assigned to a theme
+list_assigned() {
+  local raw_theme="${1:-}"
+  local as_json=false
+  if [[ "${1:-}" == "--json" ]]; then
+    as_json=true
+    raw_theme=""
+  elif [[ "${2:-}" == "--json" ]]; then
+    as_json=true
+  fi
+
+  local theme
+  theme=$(normalize_theme_name "$raw_theme")
+
+  local target_theme_dir="$CONFIG_DIR/backgrounds/$theme"
+  local assigned_ids=()
+
+  if [[ -d "$target_theme_dir" ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      local target=""
+      if [[ -f "${f%.*}.wpe-target" ]]; then
+        target=$(cat "${f%.*}.wpe-target" 2>/dev/null || true)
+      elif [[ -L "$f" ]]; then
+        target=$(realpath "$f" 2>/dev/null || true)
+        target="${target%/*}"
+      fi
+      local id="${target##*/}"
+      if [[ -n "$id" ]]; then
+        assigned_ids+=("$id")
+      fi
+    done < <(find "$target_theme_dir" -maxdepth 1 -name "*.wpe.jpg" 2>/dev/null || true)
+  fi
+
+  if [[ "$as_json" == true ]]; then
+    if (( ${#assigned_ids[@]} == 0 )); then
+      echo "[]"
+    else
+      printf '%s\n' "${assigned_ids[@]}" | jq -R . | jq -s .
+    fi
+  else
+    if [[ ! -d "$target_theme_dir" || ${#assigned_ids[@]} == 0 ]]; then
+      echo "No Wallpaper Engine items assigned to theme '$theme'."
+      return 0
+    fi
+    echo "Wallpaper Engine items assigned to '$theme':"
+    for id in "${assigned_ids[@]}"; do
+      echo " - $id"
+    done
+  fi
+}
+
+# Set a wallpaper as active desktop wallpaper directly
+set_active_wallpaper() {
+  local target="${1:-}"
+  local theme
+  theme=$(normalize_theme_name "")
+
+  # First ensure it is assigned to current theme
+  assign_wallpaper "$theme" "$target" >/dev/null 2>&1 || true
+
+  local item_dir
+  item_dir=$(resolve_wallpaper_dir "$target")
+  [[ -n "$item_dir" ]] || exit 1
+
+  local preview=""
+  for p in "$item_dir/preview.jpg" "$item_dir/preview.png" "$item_dir/preview.gif" "$item_dir/preview.webp"; do
+    [[ -f "$p" ]] && { preview="$p"; break; }
+  done
+
+  # Symlink to active background
+  if [[ -n "$preview" ]]; then
+    ln -nsf "$preview" "$STATE_DIR/current/background"
+  fi
+
+  # Run live wallpaper
+  run_wallpaper "$target"
+}
+
+# Stop running wallpaper processes
+stop_wallpaper() {
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+  fi
+
+  # Terminate any running layer-shell web or engine processes
+  pkill -9 -f "wpe-layer-web.py" 2>/dev/null || true
+  pkill -9 -f linux-wallpaperengine 2>/dev/null || true
+
+  # Update state file
+  if command -v jq >/dev/null 2>&1; then
+    jq -n '{active: false, item_dir: "", title: "", pid: 0}' > "$STATE_FILE"
+  fi
+  echo "Wallpaper Engine stopped."
+}
+
+# Run a Wallpaper Engine wallpaper
+run_wallpaper() {
+  local target="${1:-}"
+  if [[ -z "$target" ]]; then
+    echo "Usage: omarchy-wpe run <workshop-id-or-path-or-symlink>" >&2
+    exit 1
+  fi
+
+  local item_dir
+  item_dir=$(resolve_wallpaper_dir "$target")
+
+  if [[ -z "$item_dir" || ! -d "$item_dir" ]]; then
+    echo "Error: Could not resolve wallpaper folder for: $target" >&2
+    exit 1
+  fi
+
+  local title="${item_dir##*/}"
+  local wp_type="unknown"
+  if [[ -f "$item_dir/project.json" ]] && command -v jq >/dev/null 2>&1; then
+    local parsed_title
+    parsed_title=$(jq -r '.title // empty' "$item_dir/project.json" 2>/dev/null || true)
+    [[ -n "$parsed_title" ]] && title="$parsed_title"
+    local parsed_type
+    parsed_type=$(jq -r '.type // empty' "$item_dir/project.json" 2>/dev/null || true)
+    [[ -n "$parsed_type" ]] && wp_type="${parsed_type,,}"
+  fi
+
+  # Stop previous instances on all screens
+  stop_wallpaper >/dev/null 2>&1 || true
+
+  # Route Web Wallpapers to native Wayland Layer-Shell WebKit Client
+  if [[ "$wp_type" == "web" ]]; then
+    if python3 -c "import gi; gi.require_version('Gtk', '3.0'); gi.require_version('GtkLayerShell', '0.1'); gi.require_version('WebKit2', '4.1')" 2>/dev/null; then
+      setsid "$PLUGIN_DIR/scripts/wpe-layer-web.py" "$item_dir" </dev/null >/dev/null 2>&1 &
+      local web_pid=$!
+      echo "$web_pid" > "$PID_FILE"
+      if command -v jq >/dev/null 2>&1; then
+        jq -n \
+          --arg active "true" \
+          --arg item_dir "$item_dir" \
+          --arg title "$title" \
+          --arg type "web" \
+          --argjson pid "$web_pid" \
+          '{active: true, item_dir: $item_dir, title: $title, type: $type, pid: $pid}' > "$STATE_FILE"
+      fi
+      echo "==> Running Wayland Layer-Shell Web Wallpaper: '$title' (PID: $web_pid)"
+      return 0
+    else
+      echo "Error: Web wallpapers require 'gtk-layer-shell'. Please install via: yay -S gtk-layer-shell" >&2
+      if command -v omarchy-notification-send >/dev/null 2>&1; then
+        omarchy-notification-send -g 󰸉 "Wallpaper Engine" "Install gtk-layer-shell for Web wallpapers: yay -S gtk-layer-shell" 2>/dev/null || true
+      elif command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "Wallpaper Engine" "Wallpaper Engine" "Install gtk-layer-shell: yay -S gtk-layer-shell" 2>/dev/null || true
+      fi
+      return 1
+    fi
+  fi
+
+  # Route Scene & Video Wallpapers to linux-wallpaperengine
+  if ! command -v linux-wallpaperengine >/dev/null 2>&1; then
+    echo "Error: linux-wallpaperengine is not installed. Install via: yay -S linux-wallpaperengine-git" >&2
+    exit 1
+  fi
+
+  local assets_dir
+  assets_dir=$(find_assets_dir)
+  local assets_arg=()
+  if [[ -d "$assets_dir" ]]; then
+    assets_arg=(--assets-dir "$assets_dir")
+  fi
+
+  # Detect connected monitors
+  local monitor_args=()
+  if command -v hyprctl >/dev/null 2>&1; then
+    while IFS= read -r mon; do
+      if [[ -n "$mon" ]]; then
+        monitor_args+=(--screen-root "$mon" --bg "$item_dir")
+      fi
+    done < <(hyprctl monitors -j 2>/dev/null | jq -r '.[].name' 2>/dev/null || hyprctl monitors | awk '/Monitor/ {print $2}' | tr -d '():')
+  fi
+
+  # Default monitor fallback if none found
+  if (( ${#monitor_args[@]} == 0 )); then
+    monitor_args=(--screen-root DP-1 --bg "$item_dir")
+  fi
+
+  local silent_flag=()
+  # Check if muted in config
+  local is_silent=true
+  if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    if [[ $(jq -r '.muted // true' "$CONFIG_FILE" 2>/dev/null) == "false" ]]; then
+      is_silent=false
+    fi
+  fi
+
+  if [[ "$is_silent" == true ]]; then
+    silent_flag=(--silent)
+  fi
+
+  # Launch linux-wallpaperengine in background with setsid
+  setsid linux-wallpaperengine \
+    "${silent_flag[@]}" \
+    "${assets_arg[@]}" \
+    "${monitor_args[@]}" </dev/null >/dev/null 2>&1 &
+  local new_pid=$!
+  echo "$new_pid" > "$PID_FILE"
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -n \
+      --arg active "true" \
+      --arg item_dir "$item_dir" \
+      --arg title "$title" \
+      --arg type "$wp_type" \
+      --argjson pid "$new_pid" \
+      '{active: true, item_dir: $item_dir, title: $title, type: $type, pid: $pid}' > "$STATE_FILE"
+  fi
+
+  echo "==> Running Wallpaper Engine: '$title' (PID: $new_pid)"
+}
+
+# Sync with Omarchy's currently active background symlink
+sync_current() {
+  local current_bg_link="$STATE_DIR/current/background"
+  local current_bg=""
+
+  if [[ -L "$current_bg_link" ]]; then
+    current_bg=$(readlink -f "$current_bg_link" 2>/dev/null || true)
+  fi
+
+  if [[ -z "$current_bg" ]]; then
+    stop_wallpaper
+    return 0
+  fi
+
+  # Check if current background is a WPE background (has .wpe.jpg or companion target)
+  if [[ "$current_bg" == *".wpe.jpg"* || "$current_bg" == *"/431960/"* || -f "${current_bg%.*}.wpe-target" ]]; then
+    run_wallpaper "$current_bg"
+  else
+    stop_wallpaper
+  fi
+}
+
+# Print current status
+get_status() {
+  local as_json=false
+  if [[ "${1:-}" == "--json" ]]; then
+    as_json=true
+  fi
+
+  local is_running=false
+  local pid=0
+  local title=""
+  local item_dir=""
+
+  local active_pids
+  active_pids=$(pgrep -f "linux-wallpaperengine" 2>/dev/null | grep -v "$$" || true)
+  if [[ -n "$active_pids" ]]; then
+    is_running=true
+    pid=$(echo "$active_pids" | head -n 1)
+  else
+    local web_pids
+    web_pids=$(pgrep -f "wpe-layer-web.py" 2>/dev/null | grep -v "$$" || true)
+    if [[ -n "$web_pids" ]]; then
+      is_running=true
+      pid=$(echo "$web_pids" | head -n 1)
+    fi
+  fi
+
+  if [[ -f "$STATE_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    title=$(jq -r '.title // empty' "$STATE_FILE" 2>/dev/null || true)
+    item_dir=$(jq -r '.item_dir // empty' "$STATE_FILE" 2>/dev/null || true)
+  fi
+
+  if [[ "$as_json" == true ]]; then
+    jq -n \
+      --argjson running "$is_running" \
+      --argjson pid "${pid:-0}" \
+      --arg title "$title" \
+      --arg item_dir "$item_dir" \
+      '{running: $running, pid: $pid, title: $title, item_dir: $item_dir}'
+  else
+    if [[ "$is_running" == true ]]; then
+      echo "Status: Running (PID: $pid)"
+      echo "Wallpaper: ${title:-Unknown}"
+      echo "Path: $item_dir"
+    else
+      echo "Status: Inactive"
+    fi
+  fi
+}
+
+# Get editable properties for a wallpaper
+get_properties() {
+  local target="${1:-}"
+  local item_dir=""
+  if [[ -n "$target" && "$target" != "active" ]]; then
+    item_dir=$(resolve_wallpaper_dir "$target")
+  elif [[ -f "$STATE_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    item_dir=$(jq -r '.item_dir // empty' "$STATE_FILE" 2>/dev/null || true)
+  fi
+
+  if [[ -z "$item_dir" || ! -d "$item_dir" ]]; then
+    echo "[]"
+    return 0
+  fi
+
+  python3 -c "
+import json, os, sys
+
+item_dir = sys.argv[1]
+item_id = os.path.basename(item_dir.rstrip('/'))
+proj_path = os.path.join(item_dir, 'project.json')
+props_config_file = os.path.expanduser(f'~/.config/omarchy/wpe-user-props/{item_id}.json')
+
+user_overrides = {}
+if os.path.exists(props_config_file):
+    try:
+        with open(props_config_file, 'r', encoding='utf-8') as f:
+            user_overrides = json.load(f)
+    except Exception:
+        pass
+
+props_list = []
+if os.path.exists(proj_path):
+    try:
+        with open(proj_path, 'r', encoding='utf-8') as f:
+            proj = json.load(f)
+            raw = proj.get('general', {}).get('properties', {})
+            for k, v in raw.items():
+                p_type = v.get('type', 'text')
+                if p_type in ['slider', 'bool', 'color', 'combo']:
+                    cur_val = user_overrides.get(k, v.get('value'))
+                    p_fraction = v.get('fraction', False) or isinstance(v.get('min'), float) or isinstance(v.get('max'), float) or (isinstance(cur_val, float) and not cur_val.is_integer())
+                    p_precision = v.get('precision', (2 if p_fraction else 0))
+                    p_step = v.get('step', (10 ** (-p_precision) if p_fraction else 1))
+                    props_list.append({
+                        'id': k,
+                        'name': v.get('text', k.replace('_', ' ').title()),
+                        'type': p_type,
+                        'min': v.get('min', 0),
+                        'max': v.get('max', 100),
+                        'fraction': p_fraction,
+                        'precision': p_precision,
+                        'step': p_step,
+                        'value': cur_val,
+                        'options': v.get('options', [])
+                    })
+    except Exception:
+        pass
+
+print(json.dumps(props_list))
+" "$item_dir"
+}
+
+# Set a property for a wallpaper
+set_property() {
+  local target="${1:-}"
+  local prop_id="${2:-}"
+  local prop_value="${3:-}"
+
+  if [[ -z "$target" || -z "$prop_id" || -z "$prop_value" ]]; then
+    echo "Usage: omarchy-wpe set-prop <workshop_id_or_active> <property_name> <value>" >&2
+    exit 1
+  fi
+
+  local item_dir=""
+  if [[ "$target" == "active" ]]; then
+    if [[ -f "$STATE_FILE" ]] && command -v jq >/dev/null 2>&1; then
+      item_dir=$(jq -r '.item_dir // empty' "$STATE_FILE" 2>/dev/null || true)
+    fi
+  else
+    item_dir=$(resolve_wallpaper_dir "$target")
+  fi
+
+  if [[ -z "$item_dir" ]]; then
+    echo "Error: Could not resolve wallpaper directory" >&2
+    exit 1
+  fi
+
+  local item_id
+  item_id=$(basename "$item_dir")
+  local props_dir="$HOME/.config/omarchy/wpe-user-props"
+  mkdir -p "$props_dir"
+  local props_file="$props_dir/$item_id.json"
+
+  # Save to user properties file
+  python3 -c "
+import json, os, sys
+props_file = sys.argv[1]
+prop_id = sys.argv[2]
+raw_val = sys.argv[3]
+
+val = raw_val
+if raw_val.lower() == 'true':
+    val = True
+elif raw_val.lower() == 'false':
+    val = False
+else:
+    try:
+        val = int(raw_val) if '.' not in raw_val else float(raw_val)
+    except ValueError:
+        pass
+
+cur = {}
+if os.path.exists(props_file):
+    try:
+        with open(props_file, 'r', encoding='utf-8') as f:
+            cur = json.load(f)
+    except Exception:
+        pass
+
+cur[prop_id] = val
+with open(props_file, 'w', encoding='utf-8') as f:
+    json.dump(cur, f, indent=2)
+" "$props_file" "$prop_id" "$prop_value"
+
+  # Send IPC message to wpe-layer-web if socket exists
+  if [[ -S "/tmp/wpe-layer-web.sock" ]]; then
+    python3 -c "
+import socket, json, sys
+sock_path = '/tmp/wpe-layer-web.sock'
+prop_id = sys.argv[1]
+raw_val = sys.argv[2]
+
+val = raw_val
+if raw_val.lower() == 'true':
+    val = True
+elif raw_val.lower() == 'false':
+    val = False
+else:
+    try:
+        val = int(raw_val) if '.' not in raw_val else float(raw_val)
+    except ValueError:
+        pass
+
+payload = {prop_id: {'value': val}}
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(sock_path)
+    s.sendall(json.dumps(payload).encode('utf-8'))
+    s.close()
+except Exception:
+    pass
+" "$prop_id" "$prop_value" 2>/dev/null || true
+  fi
+
+  echo "==> Property '$prop_id' updated to '$prop_value' for item '$item_id'"
+}
+
+# Main command dispatcher
+case "${1:-}" in
+  list)
+    shift
+    list_wallpapers "$@"
+    ;;
+  assign)
+    shift
+    assign_wallpaper "$@"
+    ;;
+  unassign)
+    shift
+    unassign_wallpaper "$@"
+    ;;
+  toggle-theme|toggle)
+    shift
+    toggle_theme_wallpaper "$@"
+    ;;
+  assigned)
+    shift
+    list_assigned "$@"
+    ;;
+  set-active|set)
+    shift
+    set_active_wallpaper "$@"
+    ;;
+  get-props|props)
+    shift
+    get_properties "$@"
+    ;;
+  set-prop)
+    shift
+    set_property "$@"
+    ;;
+  run)
+    shift
+    run_wallpaper "$@"
+    ;;
+  stop)
+    stop_wallpaper
+    ;;
+  sync-current|sync)
+    sync_current
+    ;;
+  status)
+    shift
+    get_status "$@"
+    ;;
+  -h|--help|help)
+    cat <<HELP
+omarchy-wpe - Wallpaper Engine Manager & Omarchy Theme Bridge
+
+Usage:
+  omarchy-wpe list [--json]                    List all discovered Wallpaper Engine wallpapers
+  omarchy-wpe assign <theme> <workshop_id>     Assign a Wallpaper Engine wallpaper to an Omarchy theme
+  omarchy-wpe unassign <theme> <id-or-title>   Remove a Wallpaper Engine wallpaper from a theme
+  omarchy-wpe assigned [theme]                 List all Wallpaper Engine wallpapers assigned to a theme
+  omarchy-wpe get-props [workshop_id_or_active]Get editable properties for wallpaper in JSON
+  omarchy-wpe set-prop <target> <name> <val>   Set/update wallpaper property in real-time
+  omarchy-wpe run <workshop_id_or_path>        Launch a Wallpaper Engine wallpaper on connected monitors
+  omarchy-wpe stop                             Stop running live wallpaper
+  omarchy-wpe sync-current                     Sync live wallpaper with Omarchy active theme/background
+  omarchy-wpe status [--json]                  Show live wallpaper running status
+HELP
+    ;;
+  *)
+    get_status
+    ;;
+esac
