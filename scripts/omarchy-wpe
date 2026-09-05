@@ -570,8 +570,22 @@ run_wallpaper() {
     silent_flag=(--silent)
   fi
 
+  local pause_flags=(--fullscreen-pause-only-active)
+  if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    local pause_mode
+    pause_mode=$(jq -r '.fullscreen_pause // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ "$pause_mode" == "never" || "$pause_mode" == "false" ]]; then
+      pause_flags=(--no-fullscreen-pause)
+    elif [[ "$pause_mode" == "all" || "$pause_mode" == "always" || "$pause_mode" == "true" ]]; then
+      pause_flags=()
+    elif [[ "$pause_mode" == "only_active" ]]; then
+      pause_flags=(--fullscreen-pause-only-active)
+    fi
+  fi
+
   # Launch linux-wallpaperengine in background with setsid
   setsid linux-wallpaperengine \
+    "${pause_flags[@]}" \
     "${silent_flag[@]}" \
     "${assets_arg[@]}" \
     "${monitor_args[@]}" </dev/null >/dev/null 2>&1 &
