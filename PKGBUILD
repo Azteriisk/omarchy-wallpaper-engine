@@ -14,7 +14,7 @@ optdepends=(
 makedepends=('git')
 provides=('omarchy-plugin-wallpaper-engine')
 conflicts=('omarchy-plugin-wallpaper-engine')
-_commit="419a044e64f15f565797c607eabf7db0e6520c5a"
+_commit="860f57d84545dced69f58c8125a025394a3c132f"
 source=("${pkgname}::git+https://github.com/Azteriisk/omarchy-wallpaper-engine.git#commit=${_commit}")
 sha256sums=('SKIP')
 
