@@ -31,13 +31,13 @@ Item {
   }
 
   function run(itemTarget) {
-    runProc.command = ["bash", "-c", root.scriptPath + " run \"" + itemTarget + "\""]
+    runProc.command = [root.scriptPath, "run", String(itemTarget)]
     runProc.running = true
   }
 
   Process {
     id: statusProc
-    command: ["bash", "-c", root.scriptPath + " status --json"]
+    command: [root.scriptPath, "status", "--json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -57,13 +57,13 @@ Item {
 
   Process {
     id: syncProc
-    command: ["bash", "-c", root.scriptPath + " sync-current"]
+    command: [root.scriptPath, "sync-current"]
     onExited: root.refresh()
   }
 
   Process {
     id: stopProc
-    command: ["bash", "-c", root.scriptPath + " stop"]
+    command: [root.scriptPath, "stop"]
     onExited: root.refresh()
   }
 

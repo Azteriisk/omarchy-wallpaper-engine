@@ -692,7 +692,7 @@ get_properties() {
   fi
 
   python3 -c "
-import json, os, sys
+import json, os, sys, re
 
 item_dir = sys.argv[1]
 item_id = os.path.basename(item_dir.rstrip('/'))
@@ -714,15 +714,24 @@ if os.path.exists(proj_path):
             proj = json.load(f)
             raw = proj.get('general', {}).get('properties', {})
             for k, v in raw.items():
+                if not isinstance(k, str) or not re.match(r'^[a-zA-Z0-9_.-]{1,128}$', k):
+                    continue
                 p_type = v.get('type', 'text')
                 if p_type in ['slider', 'bool', 'color', 'combo']:
+                    clean_options = []
+                    for opt in v.get('options', []):
+                        if isinstance(opt, dict):
+                            clean_options.append({
+                                'label': str(opt.get('label', opt.get('value', '')))[:64],
+                                'value': str(opt.get('value', ''))[:64]
+                            })
                     cur_val = user_overrides.get(k, v.get('value'))
                     p_fraction = v.get('fraction', False) or isinstance(v.get('min'), float) or isinstance(v.get('max'), float) or (isinstance(cur_val, float) and not cur_val.is_integer())
                     p_precision = v.get('precision', (2 if p_fraction else 0))
                     p_step = v.get('step', (10 ** (-p_precision) if p_fraction else 1))
                     props_list.append({
                         'id': k,
-                        'name': v.get('text', k.replace('_', ' ').title()),
+                        'name': str(v.get('text', k.replace('_', ' ').title()))[:64],
                         'type': p_type,
                         'min': v.get('min', 0),
                         'max': v.get('max', 100),
@@ -730,7 +739,7 @@ if os.path.exists(proj_path):
                         'precision': p_precision,
                         'step': p_step,
                         'value': cur_val,
-                        'options': v.get('options', [])
+                        'options': clean_options
                     })
     except Exception:
         pass
@@ -747,6 +756,12 @@ set_property() {
 
   if [[ -z "$target" || -z "$prop_id" || -z "$prop_value" ]]; then
     echo "Usage: omarchy-wpe set-prop <workshop_id_or_active> <property_name> <value>" >&2
+    exit 1
+  fi
+
+  # Strictly validate prop_id to prevent shell injection or path traversal
+  if [[ ! "$prop_id" =~ ^[a-zA-Z0-9_.-]{1,128}$ ]]; then
+    echo "Error: Invalid property identifier '$prop_id'" >&2
     exit 1
   fi
 

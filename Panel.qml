@@ -63,49 +63,49 @@ Panel {
     }
     root.activeProperties = updated
 
-    setPropProc.command = ["bash", "-c", root.scriptPath + " set-prop active \"" + propId + "\" \"" + propValue + "\""]
+    setPropProc.command = [root.scriptPath, "set-prop", "active", String(propId), String(propValue)]
     setPropProc.running = true
   }
 
   function toggleThemeAssignment(itemId) {
-    actionProc.command = ["bash", "-c", root.scriptPath + " toggle-theme \"" + root.currentTheme + "\" \"" + itemId + "\""]
+    actionProc.command = [root.scriptPath, "toggle-theme", String(root.currentTheme), String(itemId)]
     actionProc.running = true
   }
 
   function assignToCurrentTheme(itemId) {
-    actionProc.command = ["bash", "-c", root.scriptPath + " assign \"" + root.currentTheme + "\" \"" + itemId + "\""]
+    actionProc.command = [root.scriptPath, "assign", String(root.currentTheme), String(itemId)]
     actionProc.running = true
   }
 
   function unassignFromTheme(titlePattern) {
-    actionProc.command = ["bash", "-c", root.scriptPath + " unassign \"" + root.currentTheme + "\" \"" + titlePattern + "\""]
+    actionProc.command = [root.scriptPath, "unassign", String(root.currentTheme), String(titlePattern)]
     actionProc.running = true
   }
 
   function runWallpaper(itemIdOrPath) {
-    actionProc.command = ["bash", "-c", root.scriptPath + " run \"" + itemIdOrPath + "\""]
+    actionProc.command = [root.scriptPath, "run", String(itemIdOrPath)]
     actionProc.running = true
   }
 
   function setActiveWallpaper(itemId) {
-    actionProc.command = ["bash", "-c", root.scriptPath + " set \"" + itemId + "\""]
+    actionProc.command = [root.scriptPath, "set", String(itemId)]
     actionProc.running = true
   }
 
   function stopWallpaper() {
-    actionProc.command = ["bash", "-c", root.scriptPath + " stop"]
+    actionProc.command = [root.scriptPath, "stop"]
     actionProc.running = true
   }
 
   function syncWallpaper() {
-    actionProc.command = ["bash", "-c", root.scriptPath + " sync-current"]
+    actionProc.command = [root.scriptPath, "sync-current"]
     actionProc.running = true
   }
 
   // --- Backend Processes ---
   Process {
     id: statusProc
-    command: ["bash", "-c", root.scriptPath + " status --json"]
+    command: [root.scriptPath, "status", "--json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -124,7 +124,7 @@ Panel {
 
   Process {
     id: propsProc
-    command: ["bash", "-c", root.scriptPath + " get-props active"]
+    command: [root.scriptPath, "get-props", "active"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -152,7 +152,7 @@ Panel {
 
   Process {
     id: workshopListProc
-    command: ["bash", "-c", root.scriptPath + " list --json"]
+    command: [root.scriptPath, "list", "--json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -170,7 +170,7 @@ Panel {
 
   Process {
     id: assignedListProc
-    command: ["bash", "-c", root.scriptPath + " assigned \"" + root.currentTheme + "\" --json"]
+    command: [root.scriptPath, "assigned", String(root.currentTheme), "--json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
