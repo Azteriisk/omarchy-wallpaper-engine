@@ -1,6 +1,6 @@
 # Maintainer: Azteriisk <https://github.com/Azteriisk>
 pkgname=omarchy-plugin-wallpaper-engine-git
-pkgver=1.0.0.r0.g2923b6c
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Steam Wallpaper Engine integration for Omarchy Desktop with Scene, Video, Web, and PipeWire Audio Visualizer support"
 arch=('any')
@@ -14,16 +14,21 @@ optdepends=(
 makedepends=('git')
 provides=('omarchy-plugin-wallpaper-engine')
 conflicts=('omarchy-plugin-wallpaper-engine')
-source=("git+https://github.com/Azteriisk/omarchy-wallpaper-engine.git")
-md5sums=('SKIP')
+_commit="419a044e64f15f565797c607eabf7db0e6520c5a"
+source=("${pkgname}::git+https://github.com/Azteriisk/omarchy-wallpaper-engine.git#commit=${_commit}")
+sha256sums=('SKIP')
 
 pkgver() {
-  cd "$srcdir/omarchy-wallpaper-engine"
-  printf "1.0.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  cd "$srcdir/${pkgname}"
+  if tag=$(git describe --long --tags --abbrev=7 2>/dev/null); then
+    echo "$tag" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  else
+    printf "1.0.0.r%s.%s\n" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  fi
 }
 
 package() {
-  cd "$srcdir/omarchy-wallpaper-engine"
+  cd "$srcdir/${pkgname}"
 
   # 1. Install CLI helper scripts
   install -Dm755 scripts/omarchy-wpe "$pkgdir/usr/bin/omarchy-wpe"
@@ -41,5 +46,9 @@ package() {
   install -Dm755 uninstall.sh "$pkgdir/usr/share/omarchy/plugins/azterisk.wallpaper-engine/uninstall.sh"
 
   # 3. Theme hook
-  install -Dm755 hooks/theme-set.sh "$pkgdir/usr/share/omarchy/hooks/theme-set.d/wpe-theme-sync.sh"
+  if [ -f hooks/theme-set.sh ]; then
+    install -Dm755 hooks/theme-set.sh "$pkgdir/usr/share/omarchy/hooks/theme-set.d/wpe-theme-sync.sh"
+  fi
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

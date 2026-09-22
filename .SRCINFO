@@ -1,0 +1,19 @@
+pkgbase = omarchy-plugin-wallpaper-engine-git
+	pkgdesc = Steam Wallpaper Engine integration for Omarchy Desktop with Scene, Video, Web, and PipeWire Audio Visualizer support
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/Azteriisk/omarchy-wallpaper-engine
+	arch = any
+	license = MIT
+	makedepends = git
+	depends = hyprland
+	depends = quickshell
+	depends = linux-wallpaperengine-git
+	optdepends = gtk-layer-shell: for HTML5/Web wallpapers
+	optdepends = python-gobject: for HTML5/Web wallpapers
+	provides = omarchy-plugin-wallpaper-engine
+	conflicts = omarchy-plugin-wallpaper-engine
+	source = omarchy-plugin-wallpaper-engine-git::git+https://github.com/Azteriisk/omarchy-wallpaper-engine.git#commit=419a044e64f15f565797c607eabf7db0e6520c5a
+	sha256sums = SKIP
+
+pkgname = omarchy-plugin-wallpaper-engine-git
