@@ -7,10 +7,57 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
 CONFIG_FILE="$CONFIG_DIR/wpe.json"
 STATE_FILE="$STATE_DIR/wpe-state.json"
-PID_FILE="/tmp/omarchy-wpe.pid"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy-wpe"
+if [[ ! -d "$RUNTIME_DIR" ]]; then
+  mkdir -m 0700 -p "$RUNTIME_DIR" 2>/dev/null || true
+fi
+chmod 0700 "$RUNTIME_DIR" 2>/dev/null || true
+PID_FILE="$RUNTIME_DIR/wpe.pid"
+IPC_SOCKET_PATH="$RUNTIME_DIR/wpe-layer-web.sock"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/azterisk.wallpaper-engine"
 
 mkdir -p "$CONFIG_DIR" "$STATE_DIR"
+
+# Write PID file exclusively with restrictive permissions
+write_pid() {
+  local pid="$1"
+  rm -f "$PID_FILE"
+  (
+    umask 0077
+    set -C
+    echo "$pid" > "$PID_FILE"
+  ) 2>/dev/null || echo "$pid" > "$PID_FILE"
+  chmod 0600 "$PID_FILE" 2>/dev/null || true
+}
+
+# Verify process ownership and command line before sending signals
+verify_and_kill_pid() {
+  local target_pid="$1"
+  local sig="${2:-TERM}"
+  [[ "$target_pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$target_pid" -gt 1 ]] || return 1
+
+  # Verify process exists
+  if ! kill -0 "$target_pid" 2>/dev/null; then
+    return 1
+  fi
+
+  # Verify process owner is current user
+  local proc_uid
+  proc_uid=$(stat -c '%u' "/proc/$target_pid" 2>/dev/null || echo -1)
+  if [[ "$proc_uid" != "$(id -u)" ]]; then
+    return 1
+  fi
+
+  # Verify command line belongs to wallpaper-engine or wpe-layer-web
+  local proc_cmd
+  proc_cmd=$(tr '\0' ' ' < "/proc/$target_pid/cmdline" 2>/dev/null || true)
+  if [[ "$proc_cmd" =~ linux-wallpaperengine || "$proc_cmd" =~ wpe-layer-web ]]; then
+    kill -"$sig" "$target_pid" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
 
 # Discover Steam Library paths
 find_steam_paths() {
@@ -90,19 +137,26 @@ list_wallpapers() {
     [[ -d "$ws_dir" ]] || continue
     for item_dir in "$ws_dir"/*; do
       [[ -d "$item_dir" ]] || continue
+      if (( count >= 500 )); then
+        break 2
+      fi
       local item_id="${item_dir##*/}"
+      item_id="${item_id:0:64}"
       local project_json="$item_dir/project.json"
       local title="Wallpaper $item_id"
       local preview=""
       local type="unknown"
 
-      if [[ -f "$project_json" ]] && command -v jq >/dev/null 2>&1; then
+      # Byte limit guard: only parse project.json if under 512KB
+      local psize
+      psize=$(stat -c%s "$project_json" 2>/dev/null || stat -f%z "$project_json" 2>/dev/null || echo 9999999)
+      if [[ -f "$project_json" && "$psize" -le 524288 ]] && command -v jq >/dev/null 2>&1; then
         local parsed_title
         parsed_title=$(jq -r '.title // empty' "$project_json" 2>/dev/null || true)
-        [[ -n "$parsed_title" ]] && title="$parsed_title"
+        [[ -n "$parsed_title" ]] && title="${parsed_title:0:100}"
         local parsed_type
         parsed_type=$(jq -r '.type // empty' "$project_json" 2>/dev/null || true)
-        [[ -n "$parsed_type" ]] && type="$parsed_type"
+        [[ -n "$parsed_type" ]] && type="${parsed_type:0:32}"
         local parsed_preview
         parsed_preview=$(jq -r '.preview // empty' "$project_json" 2>/dev/null || true)
         if [[ -n "$parsed_preview" && -f "$item_dir/$parsed_preview" ]]; then
@@ -119,6 +173,9 @@ list_wallpapers() {
         done
       fi
 
+      preview="${preview:0:500}"
+      local safe_item_dir="${item_dir:0:500}"
+
       if [[ -n "$preview" ]]; then
         (( count++ )) || true
         if [[ "$as_json" == true ]]; then
@@ -127,10 +184,10 @@ list_wallpapers() {
             --arg title "$title" \
             --arg preview "$preview" \
             --arg type "$type" \
-            --arg path "$item_dir" \
+            --arg path "$safe_item_dir" \
             '{id: $id, title: $title, preview: $preview, type: $type, path: $path}')")
         else
-          printf '%-12s | %-35s | %-10s | %s\n' "$item_id" "${title:0:35}" "$type" "$item_dir"
+          printf '%-12s | %-35s | %-10s | %s\n' "$item_id" "${title:0:35}" "$type" "$safe_item_dir"
         fi
       fi
     done
@@ -449,20 +506,24 @@ set_active_wallpaper() {
   run_wallpaper "$target"
 }
 
-# Stop running wallpaper processes
+## Stop running wallpaper processes
 stop_wallpaper() {
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid=$(cat "$PID_FILE" 2>/dev/null || true)
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -9 "$pid" 2>/dev/null || true
+    if [[ -n "$pid" ]]; then
+      verify_and_kill_pid "$pid" TERM || true
+      sleep 0.1
+      if kill -0 "$pid" 2>/dev/null; then
+        verify_and_kill_pid "$pid" KILL || true
+      fi
     fi
     rm -f "$PID_FILE"
   fi
 
-  # Terminate any running layer-shell web or engine processes
-  pkill -9 -f "wpe-layer-web.py" 2>/dev/null || true
-  pkill -9 -f linux-wallpaperengine 2>/dev/null || true
+  # Terminate any running layer-shell web or engine processes owned by current user
+  pkill -u "$(id -u)" -TERM -f "wpe-layer-web.py" 2>/dev/null || true
+  pkill -u "$(id -u)" -TERM -f "linux-wallpaperengine" 2>/dev/null || true
 
   # Update state file
   if command -v jq >/dev/null 2>&1; then
@@ -482,19 +543,18 @@ run_wallpaper() {
 
   local item_dir
   item_dir=$(resolve_wallpaper_dir "$target")
-
   if [[ -z "$item_dir" || ! -d "$item_dir" ]]; then
-    echo "Error: Could not resolve wallpaper folder for: $target" >&2
+    echo "Error: Could not resolve wallpaper '$target'" >&2
     exit 1
   fi
 
-  local title="${item_dir##*/}"
-  local wp_type="unknown"
+  local title="Wallpaper $(basename "$item_dir")"
+  local wp_type="scene"
+
   if [[ -f "$item_dir/project.json" ]] && command -v jq >/dev/null 2>&1; then
-    local parsed_title
+    local parsed_title parsed_type
     parsed_title=$(jq -r '.title // empty' "$item_dir/project.json" 2>/dev/null || true)
-    [[ -n "$parsed_title" ]] && title="$parsed_title"
-    local parsed_type
+    [[ -n "$parsed_title" ]] && title="${parsed_title:0:100}"
     parsed_type=$(jq -r '.type // empty' "$item_dir/project.json" 2>/dev/null || true)
     [[ -n "$parsed_type" ]] && wp_type="${parsed_type,,}"
   fi
@@ -507,7 +567,7 @@ run_wallpaper() {
     if python3 -c "import gi; gi.require_version('Gtk', '3.0'); gi.require_version('GtkLayerShell', '0.1'); gi.require_version('WebKit2', '4.1')" 2>/dev/null; then
       setsid "$PLUGIN_DIR/scripts/wpe-layer-web.py" "$item_dir" </dev/null >/dev/null 2>&1 &
       local web_pid=$!
-      echo "$web_pid" > "$PID_FILE"
+      write_pid "$web_pid"
       if command -v jq >/dev/null 2>&1; then
         jq -n \
           --arg active "true" \
@@ -604,7 +664,7 @@ run_wallpaper() {
     "${assets_arg[@]}" \
     "${monitor_args[@]}" </dev/null >/dev/null 2>&1 &
   local new_pid=$!
-  echo "$new_pid" > "$PID_FILE"
+  write_pid "$new_pid"
 
   if command -v jq >/dev/null 2>&1; then
     jq -n \
@@ -710,57 +770,59 @@ get_properties() {
   python3 -c "
 import json, os, sys, re
 
+MAX_JSON_BYTES = 512 * 1024
 item_dir = sys.argv[1]
 item_id = os.path.basename(item_dir.rstrip('/'))
 proj_path = os.path.join(item_dir, 'project.json')
 props_config_file = os.path.expanduser(f'~/.config/omarchy/wpe-user-props/{item_id}.json')
 
 user_overrides = {}
-if os.path.exists(props_config_file):
+if os.path.exists(props_config_file) and os.path.getsize(props_config_file) <= MAX_JSON_BYTES:
     try:
         with open(props_config_file, 'r', encoding='utf-8') as f:
-            user_overrides = json.load(f)
+            user_overrides = json.loads(f.read(MAX_JSON_BYTES))
     except Exception:
         pass
 
 props_list = []
-if os.path.exists(proj_path):
+if os.path.exists(proj_path) and os.path.getsize(proj_path) <= MAX_JSON_BYTES:
     try:
         with open(proj_path, 'r', encoding='utf-8') as f:
-            proj = json.load(f)
+            proj = json.loads(f.read(MAX_JSON_BYTES))
             raw = proj.get('general', {}).get('properties', {})
-            for k, v in raw.items():
-                if not isinstance(k, str) or not re.match(r'^[a-zA-Z0-9_.-]{1,128}$', k):
-                    continue
-                p_type = v.get('type', 'text')
-                if p_type in ['slider', 'bool', 'color', 'combo']:
-                    clean_options = []
-                    for opt in v.get('options', []):
-                        if isinstance(opt, dict):
-                            clean_options.append({
-                                'label': str(opt.get('label', opt.get('value', '')))[:64],
-                                'value': str(opt.get('value', ''))[:64]
-                            })
-                    cur_val = user_overrides.get(k, v.get('value'))
-                    p_fraction = v.get('fraction', False) or isinstance(v.get('min'), float) or isinstance(v.get('max'), float) or (isinstance(cur_val, float) and not cur_val.is_integer())
-                    p_precision = v.get('precision', (2 if p_fraction else 0))
-                    p_step = v.get('step', (10 ** (-p_precision) if p_fraction else 1))
-                    props_list.append({
-                        'id': k,
-                        'name': str(v.get('text', k.replace('_', ' ').title()))[:64],
-                        'type': p_type,
-                        'min': v.get('min', 0),
-                        'max': v.get('max', 100),
-                        'fraction': p_fraction,
-                        'precision': p_precision,
-                        'step': p_step,
-                        'value': cur_val,
-                        'options': clean_options
-                    })
+            if isinstance(raw, dict):
+                for k, v in list(raw.items())[:50]:
+                    if not isinstance(k, str) or not re.match(r'^[a-zA-Z0-9_.-]{1,128}$', k):
+                        continue
+                    p_type = str(v.get('type', 'text'))[:32]
+                    if p_type in ['slider', 'bool', 'color', 'combo']:
+                        clean_options = []
+                        for opt in list(v.get('options', []))[:20]:
+                            if isinstance(opt, dict):
+                                clean_options.append({
+                                    'label': str(opt.get('label', opt.get('value', '')))[:64],
+                                    'value': str(opt.get('value', ''))[:64]
+                                })
+                        cur_val = user_overrides.get(k, v.get('value'))
+                        p_fraction = v.get('fraction', False) or isinstance(v.get('min'), float) or isinstance(v.get('max'), float) or (isinstance(cur_val, float) and not cur_val.is_integer())
+                        p_precision = v.get('precision', (2 if p_fraction else 0))
+                        p_step = v.get('step', (10 ** (-p_precision) if p_fraction else 1))
+                        props_list.append({
+                            'id': k[:64],
+                            'name': str(v.get('text', k.replace('_', ' ').title()))[:64],
+                            'type': p_type,
+                            'min': v.get('min', 0),
+                            'max': v.get('max', 100),
+                            'fraction': p_fraction,
+                            'precision': p_precision,
+                            'step': p_step,
+                            'value': cur_val,
+                            'options': clean_options
+                        })
     except Exception:
         pass
 
-print(json.dumps(props_list))
+print(json.dumps(props_list[:50]))
 " "$item_dir"
 }
 
@@ -820,10 +882,13 @@ else:
         pass
 
 cur = {}
-if os.path.exists(props_file):
+MAX_JSON_BYTES = 512 * 1024
+if os.path.exists(props_file) and os.path.getsize(props_file) <= MAX_JSON_BYTES:
     try:
         with open(props_file, 'r', encoding='utf-8') as f:
-            cur = json.load(f)
+            cur = json.loads(f.read(MAX_JSON_BYTES))
+            if not isinstance(cur, dict):
+                cur = {}
     except Exception:
         pass
 
@@ -833,12 +898,12 @@ with open(props_file, 'w', encoding='utf-8') as f:
 " "$props_file" "$prop_id" "$prop_value"
 
   # Send IPC message to wpe-layer-web if socket exists
-  if [[ -S "/tmp/wpe-layer-web.sock" ]]; then
+  if [[ -S "$IPC_SOCKET_PATH" ]]; then
     python3 -c "
 import socket, json, sys
-sock_path = '/tmp/wpe-layer-web.sock'
-prop_id = sys.argv[1]
-raw_val = sys.argv[2]
+sock_path = sys.argv[1]
+prop_id = sys.argv[2]
+raw_val = sys.argv[3]
 
 val = raw_val
 if raw_val.lower() == 'true':
@@ -859,7 +924,7 @@ try:
     s.close()
 except Exception:
     pass
-" "$prop_id" "$prop_value" 2>/dev/null || true
+" "$IPC_SOCKET_PATH" "$prop_id" "$prop_value" 2>/dev/null || true
   fi
 
   echo "==> Property '$prop_id' updated to '$prop_value' for item '$item_id'"

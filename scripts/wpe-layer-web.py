@@ -12,6 +12,7 @@ import sys
 import os
 os.environ["WEBKIT_DISABLE_DMABUF_RENDERER"] = "1"
 import json
+import re
 import signal
 import threading
 import time
@@ -35,7 +36,16 @@ except ValueError as e:
 
 from gi.repository import Gtk, GtkLayerShell, WebKit2, Gdk, GLib
 
-IPC_SOCKET_PATH = "/tmp/wpe-layer-web.sock"
+runtime_base = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+WPE_RUNTIME_DIR = os.path.join(runtime_base, "omarchy-wpe")
+try:
+    os.makedirs(WPE_RUNTIME_DIR, mode=0o700, exist_ok=True)
+    os.chmod(WPE_RUNTIME_DIR, 0o700)
+except Exception:
+    pass
+
+IPC_SOCKET_PATH = os.path.join(WPE_RUNTIME_DIR, "wpe-layer-web.sock")
+LOCK_FILE_PATH = os.path.join(WPE_RUNTIME_DIR, "wpe-layer-web.lock")
 PROPS_CONFIG_DIR = os.path.expanduser("~/.config/omarchy/wpe-user-props")
 os.makedirs(PROPS_CONFIG_DIR, exist_ok=True)
 
@@ -173,13 +183,17 @@ def property_ipc_worker():
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(IPC_SOCKET_PATH)
+    try:
+        os.chmod(IPC_SOCKET_PATH, 0o600)
+    except Exception:
+        pass
     server.listen(5)
     server.settimeout(1.0)
 
     while running:
         try:
             conn, _ = server.accept()
-            data = conn.recv(8192).decode('utf-8')
+            data = conn.recv(8192).decode('utf-8', errors='ignore')
             conn.close()
             if not data:
                 continue
@@ -187,7 +201,14 @@ def property_ipc_worker():
             # Expected format: JSON payload containing properties
             try:
                 payload = json.loads(data)
-                payload_json = json.dumps(payload)
+                clean_payload = {}
+                if isinstance(payload, dict):
+                    for k, v in list(payload.items())[:50]:
+                        if isinstance(k, str) and re.match(r'^[a-zA-Z0-9_.-]{1,128}$', k) and isinstance(v, dict):
+                            clean_payload[k] = {"value": v.get("value")}
+                if not clean_payload:
+                    continue
+                payload_json = json.dumps(clean_payload)
                 js = f"""
                 if (window.wallpaperPropertyListener && typeof window.wallpaperPropertyListener.applyUserProperties === 'function') {{
                     try {{
@@ -225,11 +246,15 @@ def main():
         print("Usage: wpe-layer-web.py <path-to-wallpaper-dir-or-html>", file=sys.stderr)
         sys.exit(1)
 
-    # Process singleton lock
+    # Process singleton lock with O_NOFOLLOW and restrictive mode 0600
     try:
         import fcntl
         global lock_fd
-        lock_fd = open("/tmp/wpe-layer-web.lock", "w")
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(LOCK_FILE_PATH, flags, 0o600)
+        lock_fd = open(fd, "w")
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except Exception:
         # Another instance is already starting or running
@@ -238,35 +263,41 @@ def main():
     target_path = os.path.abspath(sys.argv[1])
     target_dir = target_path
     html_file = "index.html"
-    item_id = os.path.basename(target_dir.rstrip('/'))
+    item_id = os.path.basename(target_dir.rstrip('/'))[:64]
     merged_properties = {}
+
+    MAX_JSON_BYTES = 512 * 1024
 
     if os.path.isfile(target_path):
         target_dir = os.path.dirname(target_path)
-        html_file = os.path.basename(target_path)
-        item_id = os.path.basename(target_dir.rstrip('/'))
+        html_file = os.path.basename(target_path)[:64]
+        item_id = os.path.basename(target_dir.rstrip('/'))[:64]
     elif os.path.isdir(target_path):
         proj_path = os.path.join(target_path, "project.json")
-        if os.path.exists(proj_path):
+        if os.path.isfile(proj_path) and os.path.getsize(proj_path) <= MAX_JSON_BYTES:
             try:
                 with open(proj_path, "r", encoding="utf-8") as f:
-                    proj = json.load(f)
-                    html_file = proj.get("file", "index.html")
+                    proj = json.loads(f.read(MAX_JSON_BYTES))
+                    html_file = str(proj.get("file", "index.html"))[:64]
                     raw_props = proj.get("general", {}).get("properties", {})
-                    # Clone default properties
-                    for k, v in raw_props.items():
-                        merged_properties[k] = {"value": v.get("value")}
+                    # Clone default properties (bounded)
+                    if isinstance(raw_props, dict):
+                        for k, v in list(raw_props.items())[:50]:
+                            if isinstance(k, str) and re.match(r'^[a-zA-Z0-9_.-]{1,128}$', k) and isinstance(v, dict):
+                                merged_properties[k] = {"value": v.get("value")}
             except Exception:
                 html_file = "index.html"
 
-    # Merge saved user overrides if any
+    # Merge saved user overrides if any (bounded)
     saved_props_file = os.path.join(PROPS_CONFIG_DIR, f"{item_id}.json")
-    if os.path.exists(saved_props_file):
+    if os.path.isfile(saved_props_file) and os.path.getsize(saved_props_file) <= MAX_JSON_BYTES:
         try:
             with open(saved_props_file, "r", encoding="utf-8") as sf:
-                user_overrides = json.load(sf)
-                for k, v in user_overrides.items():
-                    merged_properties[k] = {"value": v}
+                user_overrides = json.loads(sf.read(MAX_JSON_BYTES))
+                if isinstance(user_overrides, dict):
+                    for k, v in list(user_overrides.items())[:50]:
+                        if isinstance(k, str) and re.match(r'^[a-zA-Z0-9_.-]{1,128}$', k):
+                            merged_properties[k] = {"value": v}
         except Exception:
             pass
 

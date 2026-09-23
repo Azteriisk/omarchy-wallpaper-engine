@@ -41,12 +41,13 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (!text || text.length > 32768) return
         try {
           var data = JSON.parse(text.trim())
-          root.isRunning = data.running || false
-          root.currentPid = data.pid || 0
-          root.currentTitle = data.title || ""
-          root.currentPath = data.item_dir || ""
+          root.isRunning = Boolean(data.running)
+          root.currentPid = Number(data.pid) || 0
+          root.currentTitle = String(data.title || "").slice(0, 100)
+          root.currentPath = String(data.item_dir || "").slice(0, 500)
           root.loaded = true
         } catch(e) {
           root.loaded = true
@@ -73,13 +74,13 @@ Item {
   }
 
   function updateState(rawText) {
-    if (!rawText) return
+    if (!rawText || rawText.length > 32768) return
     try {
       var data = JSON.parse(rawText.trim())
       root.isRunning = Boolean(data.active || data.running)
       root.currentPid = Number(data.pid) || 0
-      root.currentTitle = String(data.title || "")
-      root.currentPath = String(data.item_dir || "")
+      root.currentTitle = String(data.title || "").slice(0, 100)
+      root.currentPath = String(data.item_dir || "").slice(0, 500)
       root.loaded = true
     } catch(e) {
       root.loaded = true

@@ -108,12 +108,13 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (!text || text.length > 32768) return
         try {
           var data = JSON.parse(text.trim())
-          root.isRunning = data.running || false
-          root.currentPid = data.pid || 0
-          root.currentTitle = data.title || ""
-          root.currentPath = data.item_dir || ""
+          root.isRunning = Boolean(data.running)
+          root.currentPid = Number(data.pid) || 0
+          root.currentTitle = String(data.title || "").slice(0, 100)
+          root.currentPath = String(data.item_dir || "").slice(0, 500)
           if (root.isRunning) root.loadProperties()
           else root.activeProperties = []
         } catch(e) {}
@@ -127,9 +128,48 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (!text || text.length > 65536) {
+          root.activeProperties = []
+          return
+        }
         try {
-          var list = JSON.parse(text.trim())
-          root.activeProperties = Array.isArray(list) ? list : []
+          var rawList = JSON.parse(text.trim())
+          if (!Array.isArray(rawList)) {
+            root.activeProperties = []
+            return
+          }
+          var cleanList = []
+          var maxProps = Math.min(rawList.length, 50)
+          for (var i = 0; i < maxProps; i++) {
+            var p = rawList[i]
+            if (!p || typeof p !== 'object') continue
+            var cleanOpts = []
+            if (Array.isArray(p.options)) {
+              var maxOpts = Math.min(p.options.length, 20)
+              for (var j = 0; j < maxOpts; j++) {
+                var opt = p.options[j]
+                if (opt && typeof opt === 'object') {
+                  cleanOpts.push({
+                    label: String(opt.label || opt.value || "").slice(0, 64),
+                    value: String(opt.value || "").slice(0, 64)
+                  })
+                }
+              }
+            }
+            cleanList.push({
+              id: String(p.id || "").slice(0, 64),
+              name: String(p.name || p.id || "").slice(0, 64),
+              type: String(p.type || "text").slice(0, 32),
+              min: Number(p.min) || 0,
+              max: Number(p.max) || 100,
+              fraction: Boolean(p.fraction),
+              precision: Number(p.precision) || 0,
+              step: Number(p.step) || 1,
+              value: p.value,
+              options: cleanOpts
+            })
+          }
+          root.activeProperties = cleanList
         } catch(e) {
           root.activeProperties = []
         }
@@ -143,11 +183,11 @@ Panel {
     watchChanges: true
     printErrors: false
     onLoaded: {
-      var val = text().trim()
+      var val = text().trim().slice(0, 64)
       if (val.length > 0) root.currentTheme = val
     }
     onFileChanged: {
-      var val = text().trim()
+      var val = text().trim().slice(0, 64)
       if (val.length > 0) {
         root.currentTheme = val
         root.loadAssignedList()
@@ -162,9 +202,30 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         root.loadingItems = false
+        if (!text || text.length > 524288) {
+          root.workshopItems = []
+          return
+        }
         try {
-          var items = JSON.parse(text.trim())
-          root.workshopItems = Array.isArray(items) ? items : []
+          var rawItems = JSON.parse(text.trim())
+          if (!Array.isArray(rawItems)) {
+            root.workshopItems = []
+            return
+          }
+          var cleanItems = []
+          var maxItems = Math.min(rawItems.length, 500)
+          for (var k = 0; k < maxItems; k++) {
+            var it = rawItems[k]
+            if (!it || typeof it !== 'object') continue
+            cleanItems.push({
+              id: String(it.id || "").slice(0, 64),
+              title: String(it.title || ("Item " + it.id)).slice(0, 100),
+              type: String(it.type || "unknown").slice(0, 32),
+              preview: String(it.preview || "").slice(0, 500),
+              path: String(it.path || "").slice(0, 500)
+            })
+          }
+          root.workshopItems = cleanItems
         } catch(e) {
           root.workshopItems = []
         }
@@ -179,8 +240,22 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (!text || text.length > 65536) {
+          root.assignedIds = []
+          return
+        }
         try {
-          root.assignedIds = JSON.parse(text.trim()) || []
+          var rawAssigned = JSON.parse(text.trim()) || []
+          if (!Array.isArray(rawAssigned)) {
+            root.assignedIds = []
+            return
+          }
+          var cleanAssigned = []
+          var maxAssigned = Math.min(rawAssigned.length, 500)
+          for (var a = 0; a < maxAssigned; a++) {
+            cleanAssigned.push(String(rawAssigned[a]).slice(0, 64))
+          }
+          root.assignedIds = cleanAssigned
         } catch(e) {
           root.assignedIds = []
         }
@@ -268,6 +343,7 @@ Panel {
               spacing: Style.space(2)
 
               Text {
+                textFormat: Text.PlainText
                 text: "Wallpaper Engine"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
@@ -278,7 +354,8 @@ Panel {
               }
 
               Text {
-                text: root.isRunning ? ("LIVE · " + root.currentTitle) : "STANDBY · STATIC BACKGROUND"
+                textFormat: Text.PlainText
+                text: root.isRunning ? ("LIVE · " + String(root.currentTitle).slice(0, 64)) : "STANDBY · STATIC BACKGROUND"
                 color: root.isRunning ? Color.accent : Qt.darker(root.bar.foreground, 1.8)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -339,6 +416,7 @@ Panel {
                 spacing: Style.space(8)
 
                 Text {
+                  textFormat: Text.PlainText
                   text: root.propertiesExpanded ? "▾" : "▸"
                   color: Color.accent
                   font.pixelSize: Style.font.title
@@ -346,6 +424,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   text: "LIVE CONTROLS & SETTINGS (" + root.activeProperties.length + ")"
                   color: root.bar.foreground
                   font.pixelSize: Style.font.caption
@@ -388,7 +467,8 @@ Panel {
                       visible: propContainer.propItem.type === "slider"
 
                       Text {
-                        text: propContainer.propItem.name
+                        textFormat: Text.PlainText
+                        text: String(propContainer.propItem.name).slice(0, 64)
                         color: root.bar.foreground
                         font.family: root.bar.fontFamily
                         font.pixelSize: Style.font.caption
@@ -399,6 +479,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         text: {
                           var val = propSlider.dragging ? propSlider.liveValue : propContainer.propItem.value
                           if (propContainer.propItem.fraction) {
@@ -439,7 +520,8 @@ Panel {
                       visible: propContainer.propItem.type === "combo" && propContainer.propItem.options && propContainer.propItem.options.length > 0
 
                       Text {
-                        text: propContainer.propItem.name + ":"
+                        textFormat: Text.PlainText
+                        text: String(propContainer.propItem.name).slice(0, 64) + ":"
                         color: root.bar.foreground
                         font.family: root.bar.fontFamily
                         font.pixelSize: Style.font.caption
@@ -453,7 +535,7 @@ Panel {
                           model: propContainer.propItem.options
                           Button {
                             required property var modelData
-                            text: modelData.label || modelData.value
+                            text: String(modelData.label || modelData.value || "").slice(0, 64)
                             fontSize: Style.font.fineprint
                             foreground: modelData.value === propContainer.propItem.value ? Color.accent : root.bar.foreground
                             bordered: true
@@ -484,6 +566,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: "Assign wallpapers to this theme so they appear in your Super+Ctrl+Space background switcher."
               color: Qt.darker(root.bar.foreground, 1.6)
               font.family: root.bar.fontFamily
@@ -510,6 +593,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.loadingItems
               text: "Scanning..."
               color: Color.accent
@@ -531,6 +615,7 @@ Panel {
               visible: root.workshopItems.length === 0 && !root.loadingItems
 
               Text {
+                textFormat: Text.PlainText
                 anchors.centerIn: parent
                 text: "No downloaded Wallpaper Engine items found.\nMake sure wallpapers are subscribed in Steam."
                 color: Qt.darker(root.bar.foreground, 2.0)
@@ -583,7 +668,8 @@ Panel {
                     spacing: Style.space(2)
 
                     Text {
-                      text: itemCard.modelData.title || ("Item " + itemCard.modelData.id)
+                      textFormat: Text.PlainText
+                      text: String(itemCard.modelData.title || ("Item " + itemCard.modelData.id)).slice(0, 100)
                       color: root.bar.foreground
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.body
@@ -593,7 +679,8 @@ Panel {
                     }
 
                     Text {
-                      text: "ID: " + itemCard.modelData.id + " · Type: " + itemCard.modelData.type + (String(itemCard.modelData.type).toLowerCase() === 'web' ? " (CEF)" : "")
+                      textFormat: Text.PlainText
+                      text: "ID: " + String(itemCard.modelData.id).slice(0, 64) + " · Type: " + String(itemCard.modelData.type).slice(0, 32) + (String(itemCard.modelData.type).toLowerCase() === 'web' ? " (CEF)" : "")
                       color: String(itemCard.modelData.type).toLowerCase() === 'web' ? Qt.darker(Color.accent, 1.3) : Qt.darker(root.bar.foreground, 2.0)
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.caption
