@@ -46,13 +46,12 @@ ln -nsf "$TARGET_DIR/scripts/omarchy-toggle-webkit-crash-alerts" "$BIN_DIR/omarc
 ln -nsf "$TARGET_DIR/hooks/theme-set.sh" "$HOOKS_DIR/wpe-theme-sync.sh"
 
 # Check for linux-wallpaperengine dependency
-if ! command -v linux-wallpaperengine >/dev/null 2>&1; then
+if ! command -v linux-wallpaperengine >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/linux-wallpaperengine" ]; then
   echo "==> Note: 'linux-wallpaperengine' was not found on your system."
-  if command -v yay >/dev/null 2>&1; then
-    echo "    To install it, run: yay -S linux-wallpaperengine-git"
-  elif command -v paru >/dev/null 2>&1; then
-    echo "    To install it, run: paru -S linux-wallpaperengine-git"
-  fi
+  echo "    Recommended: Install the Wayland multi-monitor optimized fork:"
+  echo "    git clone https://github.com/Azteriisk/linux-wallpaperengine.git /tmp/lwe"
+  echo "    cd /tmp/lwe/packaging/archlinux && makepkg -si"
+  echo "    Or install upstream via AUR: yay -S linux-wallpaperengine-git"
 fi
 
 # Check for gtk-layer-shell (for Web/HTML5 wallpapers)

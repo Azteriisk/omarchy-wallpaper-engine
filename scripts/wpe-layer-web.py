@@ -43,6 +43,7 @@ httpd = None
 webviews = []
 audio_proc = None
 running = True
+push_in_flight = False
 
 def start_local_server(directory):
     global httpd
@@ -141,18 +142,23 @@ def audio_capture_worker():
             left_bands = compute_64_bands(left)
             right_bands = compute_64_bands(right)
             bands128 = left_bands + right_bands
-            audio_json = json.dumps(bands128)
-            
-            js = f"if(window.__feedWpeAudio) window.__feedWpeAudio({audio_json});"
-            def push_js(script=js):
-                for wv in webviews:
+            js = f"if(window.wallpaperAudioListeners && window.wallpaperAudioListeners.length > 0 && window.__feedWpeAudio) window.__feedWpeAudio({audio_json});"
+            global push_in_flight
+            if not push_in_flight:
+                push_in_flight = True
+                def push_js(script=js):
+                    global push_in_flight
                     try:
-                        wv.run_javascript(script, None, None, None)
-                    except Exception:
-                        pass
-                return False
+                        for wv in webviews:
+                            try:
+                                wv.run_javascript(script, None, None, None)
+                            except Exception:
+                                pass
+                    finally:
+                        push_in_flight = False
+                    return False
 
-            GLib.idle_add(push_js)
+                GLib.idle_add(push_js)
             time.sleep(0.025) # Smooth ~40 FPS audio FFT stream
         except Exception as ex:
             time.sleep(0.05)

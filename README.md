@@ -24,10 +24,14 @@ A modular Omarchy desktop plugin and background switcher integration for Steam W
 
 ### 1. Arch Linux and Omarchy Packages:
 ```bash
-# Core Scene and Video wallpaper runner
-yay -S linux-wallpaperengine-git
+# Core Scene and Video wallpaper runner:
+# Recommended: Install the Wayland multi-monitor & memory-leak optimized fork:
+git clone https://github.com/Azteriisk/linux-wallpaperengine.git /tmp/lwe
+cd /tmp/lwe/packaging/archlinux && makepkg -si
 
-# Web/HTML5 Layer-Shell and Audio FFT dependencies
+# (Alternatively, standard upstream via AUR: yay -S linux-wallpaperengine-git)
+
+# Web/HTML5 Layer-Shell and Audio FFT dependencies:
 sudo pacman -S gtk-layer-shell webkit2gtk-4.1 pipewire-tools
 ```
 

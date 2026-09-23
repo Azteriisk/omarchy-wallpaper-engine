@@ -27,7 +27,6 @@ Panel {
 
   function refresh() {
     statusProc.running = true
-    themeNameProc.running = true
     loadWorkshopList()
     loadAssignedList()
   }
@@ -138,14 +137,20 @@ Panel {
     }
   }
 
-  Process {
-    id: themeNameProc
-    command: ["cat", Quickshell.env("HOME") + "/.local/state/omarchy/current/theme.name"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var val = text.trim()
-        if (val.length > 0) root.currentTheme = val
+  FileView {
+    id: themeNameFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme.name"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      var val = text().trim()
+      if (val.length > 0) root.currentTheme = val
+    }
+    onFileChanged: {
+      var val = text().trim()
+      if (val.length > 0) {
+        root.currentTheme = val
+        root.loadAssignedList()
       }
     }
   }

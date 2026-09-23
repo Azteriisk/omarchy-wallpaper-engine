@@ -468,6 +468,7 @@ stop_wallpaper() {
   if command -v jq >/dev/null 2>&1; then
     jq -n '{active: false, item_dir: "", title: "", pid: 0}' > "$STATE_FILE"
   fi
+  command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell -q wallpaper-engine refresh >/dev/null 2>&1 || true
   echo "Wallpaper Engine stopped."
 }
 
@@ -529,8 +530,10 @@ run_wallpaper() {
     fi
   fi
 
-  # Route Scene & Video Wallpapers to linux-wallpaperengine
-  if ! command -v linux-wallpaperengine >/dev/null 2>&1; then
+  local engine_bin="linux-wallpaperengine"
+  if [[ -x "$HOME/.local/bin/linux-wallpaperengine" ]]; then
+    engine_bin="$HOME/.local/bin/linux-wallpaperengine"
+  elif ! command -v "$engine_bin" >/dev/null 2>&1; then
     echo "Error: linux-wallpaperengine is not installed. Install via: yay -S linux-wallpaperengine-git" >&2
     exit 1
   fi
@@ -567,7 +570,17 @@ run_wallpaper() {
   fi
 
   if [[ "$is_silent" == true ]]; then
-    silent_flag=(--silent)
+    # Disable audio playback, automute detector, and audio reactivity to prevent leaking PulseAudio threads
+    silent_flag=(--silent --noautomute --no-audio-processing)
+  fi
+
+  local fps_flags=(--fps 60)
+  if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    local cfg_fps
+    cfg_fps=$(jq -r '.fps // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ -n "$cfg_fps" && "$cfg_fps" =~ ^[0-9]+$ ]]; then
+      fps_flags=(--fps "$cfg_fps")
+    fi
   fi
 
   local pause_flags=(--fullscreen-pause-only-active)
@@ -584,7 +597,8 @@ run_wallpaper() {
   fi
 
   # Launch linux-wallpaperengine in background with setsid
-  setsid linux-wallpaperengine \
+  setsid "$engine_bin" \
+    "${fps_flags[@]}" \
     "${pause_flags[@]}" \
     "${silent_flag[@]}" \
     "${assets_arg[@]}" \
@@ -601,6 +615,8 @@ run_wallpaper() {
       --argjson pid "$new_pid" \
       '{active: true, item_dir: $item_dir, title: $title, type: $type, pid: $pid}' > "$STATE_FILE"
   fi
+
+  command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell -q wallpaper-engine refresh >/dev/null 2>&1 || true
 
   echo "==> Running Wallpaper Engine: '$title' (PID: $new_pid)"
 }

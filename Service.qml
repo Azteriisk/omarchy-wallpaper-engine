@@ -72,6 +72,29 @@ Item {
     onExited: root.refresh()
   }
 
+  function updateState(rawText) {
+    if (!rawText) return
+    try {
+      var data = JSON.parse(rawText.trim())
+      root.isRunning = Boolean(data.active || data.running)
+      root.currentPid = Number(data.pid) || 0
+      root.currentTitle = String(data.title || "")
+      root.currentPath = String(data.item_dir || "")
+      root.loaded = true
+    } catch(e) {
+      root.loaded = true
+    }
+  }
+
+  FileView {
+    id: wpeStateFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/wpe-state.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.updateState(text())
+    onFileChanged: root.updateState(text())
+  }
+
   property string lastBg: ""
 
   Process {
@@ -89,19 +112,31 @@ Item {
     }
   }
 
-  // Periodic poll to check background changes and keep status updated
-  Timer {
-    interval: 1000
-    repeat: true
-    running: true
-    onTriggered: {
+  FileView {
+    id: bgWatcher
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/background"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
       if (!checkBgProc.running) checkBgProc.running = true
-      root.refresh()
+    }
+    onFileChanged: {
+      if (!checkBgProc.running) checkBgProc.running = true
+    }
+  }
+
+  // Lightweight watchdog: only active while wallpaper is actually running
+  Timer {
+    interval: 30000
+    repeat: true
+    running: root.isRunning
+    onTriggered: {
+      if (!statusProc.running) statusProc.running = true
     }
   }
 
   Component.onCompleted: {
-    checkBgProc.running = true
+    if (!checkBgProc.running) checkBgProc.running = true
     root.refresh()
   }
 
