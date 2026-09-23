@@ -53,5 +53,41 @@ class TestWpeSecurity(unittest.TestCase):
             self.assertNotIn('bad"; id; #', prop_ids)
 
 
+    def test_oversized_project_json_ignored(self):
+        """Verify project.json exceeding 512KB is rejected before parsing."""
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td) / "project.json"
+            # Generate > 512KB payload
+            huge_padding = "a" * (520 * 1024)
+            proj.write_text(f'{{"general": {{"properties": {{"pad": {{"value": "{huge_padding}"}}}}}}}}')
+
+            res = subprocess.run(
+                [str(wpe_bin), "get-props", td],
+                capture_output=True,
+                text=True
+            )
+            self.assertEqual(res.returncode, 0)
+            import json
+            props = json.loads(res.stdout)
+            self.assertEqual(props, [], "Oversized project.json should not produce properties.")
+
+    def test_property_count_bounded_to_50(self):
+        """Verify properties are capped to at most 50 items."""
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td) / "project.json"
+            raw_props = {f"prop_{i}": {"type": "slider", "min": 0, "max": 100, "value": i} for i in range(80)}
+            import json
+            proj.write_text(json.dumps({"general": {"properties": raw_props}}))
+
+            res = subprocess.run(
+                [str(wpe_bin), "get-props", td],
+                capture_output=True,
+                text=True
+            )
+            self.assertEqual(res.returncode, 0)
+            props = json.loads(res.stdout)
+            self.assertLessEqual(len(props), 50, "Property list must be bounded to 50 max.")
+
+
 if __name__ == "__main__":
     unittest.main()
