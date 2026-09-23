@@ -13,7 +13,7 @@ pkgbase = omarchy-plugin-wallpaper-engine-git
 	optdepends = python-gobject: for HTML5/Web wallpapers
 	provides = omarchy-plugin-wallpaper-engine
 	conflicts = omarchy-plugin-wallpaper-engine
-	source = omarchy-plugin-wallpaper-engine-git::git+https://github.com/Azteriisk/omarchy-wallpaper-engine.git#commit=e2015e9f388aa22fa9dc21b518ebfc324bd33abe
+	source = omarchy-plugin-wallpaper-engine-git::git+https://github.com/Azteriisk/omarchy-wallpaper-engine.git#commit=d1dd8c82a2890583199725d37e90529cb0572035
 	sha256sums = SKIP
 
 pkgname = omarchy-plugin-wallpaper-engine-git
