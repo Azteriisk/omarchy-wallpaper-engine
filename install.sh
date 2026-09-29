@@ -48,9 +48,10 @@ ln -nsf "$TARGET_DIR/hooks/theme-set.sh" "$HOOKS_DIR/wpe-theme-sync.sh"
 # Check for linux-wallpaperengine dependency
 if ! command -v linux-wallpaperengine >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/linux-wallpaperengine" ]; then
   echo "==> Note: 'linux-wallpaperengine' was not found on your system."
-  echo "    Recommended: Install the Wayland multi-monitor optimized fork:"
+  echo "    Recommended: Install the Wayland multi-monitor optimized fork (pinned commit):"
   echo "    git clone https://github.com/Azteriisk/linux-wallpaperengine.git /tmp/lwe"
-  echo "    cd /tmp/lwe/packaging/archlinux && makepkg -si"
+  echo "    cd /tmp/lwe && git checkout 744d900e2380590a36987f2ff62b535d487216a7"
+  echo "    cd packaging/archlinux && makepkg -si"
   echo "    Or install upstream via AUR: yay -S linux-wallpaperengine-git"
 fi
 

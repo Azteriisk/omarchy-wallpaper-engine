@@ -152,6 +152,7 @@ def audio_capture_worker():
             left_bands = compute_64_bands(left)
             right_bands = compute_64_bands(right)
             bands128 = left_bands + right_bands
+            audio_json = json.dumps(bands128)
             js = f"if(window.wallpaperAudioListeners && window.wallpaperAudioListeners.length > 0 && window.__feedWpeAudio) window.__feedWpeAudio({audio_json});"
             global push_in_flight
             if not push_in_flight:
