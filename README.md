@@ -26,9 +26,7 @@ A modular Omarchy desktop plugin and background switcher integration for Steam W
 ```bash
 # Core Scene and Video wallpaper runner:
 # Recommended: Install the Wayland multi-monitor & memory-leak optimized fork:
-git clone https://github.com/Azteriisk/linux-wallpaperengine.git /tmp/lwe
-cd /tmp/lwe && git checkout 744d900e2380590a36987f2ff62b535d487216a7
-cd packaging/archlinux && makepkg -si
+git clone https://github.com/Azteriisk/linux-wallpaperengine.git && cd linux-wallpaperengine && git checkout 744d900e2380590a36987f2ff62b535d487216a7 && cd packaging/archlinux && makepkg -si
 
 # (Alternatively, standard upstream via AUR: yay -S linux-wallpaperengine-git)
 
